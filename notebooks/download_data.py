@@ -1,3 +1,9 @@
+
+# Run thes scrips to download the raw data files into the directory data/raw/
+# Run "pip install requests" in VS code terminal 
+# In the terminal, navigate to the repository folder where the noteooks is and run: python download_data.py
+# Ths will download three Excel files into data/raw/ folder
+
 from pathlib import Path
 import re
 import sys
