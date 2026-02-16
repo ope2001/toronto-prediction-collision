@@ -1,0 +1,43 @@
+# Python
+__pycache__
+.pyc
+.py[cod]
+venv
+env
+.egg-info
+
+# Data files 
+dataraw
+dataprocessed
+.csv
+.xlsx
+.json
+
+data/raw/*
+!data/raw/.gitkeep
+*.xlsx
+
+
+
+# Model files
+models
+.pkl
+.h5
+.joblib
+
+# Results
+resultsfigures
+resultstables
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Logs
+.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
