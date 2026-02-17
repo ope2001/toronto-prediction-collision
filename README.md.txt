@@ -61,3 +61,23 @@ Models
 ## Contact
 Supervisor:hany.osman@unfc.ca
 GitHub:https://github.com/ope2001/toronto-collision-prediction
+
+## Data Note
+Due to file size constraints, raw datasets are not included in this repository. The `Traffic_Collisions.csv` file exceeds GitHub's recommended file size limits and has been excluded via `.gitignore`. 
+
+To reproduce this analysis:
+1. Download the Traffic Collisions dataset from [Toronto Open Data Portal](https://open.toronto.ca/dataset/motor-vehicle-collisions-involving-killed-or-seriously-injured-persons/)
+2. Download the weather data from Environment Canada
+3. Place both files in `data/raw/` directory
+4. Run the analysis notebooks
+
+See `data/README.md` for more details on data sources.
+
+
+
+
+
+
+
+
+
