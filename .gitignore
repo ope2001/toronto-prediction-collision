@@ -1,0 +1,47 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+
+# ---------- Environments ----------
+.venv/
+venv/
+env/
+
+# ---------- Jupyter ----------
+.ipynb_checkpoints/
+
+# ---------- Data (do not commit) ----------
+data/raw/
+data/processed/
+*.csv
+*.xlsx
+*.xls
+*.parquet
+
+# ---------- Models / artifacts ----------
+models/
+*.pkl
+*.joblib
+*.h5
+
+# ---------- Outputs ----------
+results/
+reports/outputs/
+*.png
+*.jpg
+*.jpeg
+*.pdf
+
+# ---------- Logs ----------
+*.log
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+
+# ---------- Secrets ----------
+.env
