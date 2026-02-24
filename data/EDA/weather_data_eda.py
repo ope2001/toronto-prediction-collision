@@ -10,13 +10,29 @@ warnings.filterwarnings("ignore")
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-
+from pathlib import Path
 
 # ----------------------------
 # 0) CONFIG
 # ----------------------------
 FILE_PATH = r"C:\Users\Tanjiro\Downloads\Project\Project\raw_data\weather raw 23-25.xlsx"  # update this to your actual file path
+# SAVING THE EDA OUTPUT TO FIGURES FOLDER
+SAVE_FIGURES = True   # set False if you only want to display plots
+FIG_DIR = Path(__file__).resolve().parent / "results" / "figures"
+FIG_DIR.mkdir(parents=True, exist_ok=True)
 
+def save_or_show(fig_name: str):
+    """
+    Save figure to results/figures if SAVE_FIGURES=True, otherwise show it.
+    """
+    if SAVE_FIGURES:
+        out_path = FIG_DIR / f"{fig_name}.png"
+        plt.savefig(out_path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {out_path}")
+        plt.close()
+    else:
+        plt.show()
+        
 # ----------------------------
 # 1) LOAD DATA
 # ----------------------------
@@ -209,7 +225,7 @@ def plot_missing_values(df):
     plt.ylabel("Missing (%)")
     plt.title("Missing Values by Column (Raw Data)")
     plt.tight_layout()
-    plt.show()
+    save_or_show("missing_values_raw")
 
 
 # ----------------------------
@@ -240,7 +256,7 @@ def plot_numeric_histograms(df, num_cols, max_cols=12):
 
     plt.suptitle("Raw Numeric Distributions", y=1.02)
     plt.tight_layout()
-    plt.show()
+    save_or_show("raw_numeric_histograms")
 
 
 # ----------------------------
@@ -274,7 +290,7 @@ def plot_basic_boxplots(df):
         axes[j].axis("off")
 
     plt.tight_layout()
-    plt.show()
+    save_or_show("raw_boxplots")
 
 
 # ----------------------------
@@ -308,7 +324,7 @@ def plot_raw_time_trends(df):
         plt.xlabel("Datetime (preview from DMY + Time)")
         plt.ylabel(col)
         plt.tight_layout()
-        plt.show()
+        save_or_show(f"raw_time_trend_{col}")
 
 
 # ----------------------------
@@ -332,7 +348,7 @@ def plot_correlation_heatmap(df, num_cols):
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     plt.title("Correlation Heatmap (Raw Numeric Columns)")
     plt.tight_layout()
-    plt.show()
+    save_or_show("raw_correlation_heatmap") 
 
 
 # ----------------------------
@@ -355,7 +371,8 @@ def run_basic_eda():
     plot_correlation_heatmap(df, num_cols)
 
     print("\nBasic EDA complete ✅ (No cleaning/aggregation performed)")
-
+    if SAVE_FIGURES:
+        print(f"Figures saved in: {FIG_DIR}")
 
 # ----------------------------
 # 13) EXECUTE
