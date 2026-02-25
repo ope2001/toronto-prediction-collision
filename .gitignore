@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+env/
+*.egg-info/
+
+# Data files (ignore datasets)
+data/data_raw/*
+data/processed/*
+
+# Keep folder structure
+!data/data_raw/.gitkeep
+!data/processed/.gitkeep
+
+# Models
+models/
+*.pkl
+*.h5
+*.joblib
+
+# Results
+results/
+figures/
+tables/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
