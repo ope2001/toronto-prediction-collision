@@ -12,11 +12,19 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+BASE_DIR = Path(".")               # repo root
+DATA_DIR = BASE_DIR / "data" / "data_raw"
+
+FILE_PATH = DATA_DIR / "weather raw 23-25.xlsx"
+
+df = pd.read_excel(FILE_PATH, engine="openpyxl")
+
+
 # ----------------------------
 # 0) CONFIG
 # ----------------------------
-FILE_PATH = r"C:\Users\Tanjiro\Desktop\MDA UNF\T5\Capstone project\toronto-prediction-collision\data\data_raw\weather raw 23-25.xlsx"  # update this to your actual file path
 # SAVING THE EDA OUTPUT TO FIGURES FOLDER
+
 SAVE_FIGURES = True   # set False if you only want to display plots
 FIG_DIR = Path(__file__).resolve().parent / "results" / "figures"
 FIG_DIR.mkdir(parents=True, exist_ok=True)
