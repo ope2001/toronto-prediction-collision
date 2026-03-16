@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,8 +5,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import json
 import pickle
-import joblib
 
+import joblib
 import numpy as np
 import pandas as pd
 import requests
@@ -46,29 +45,64 @@ class AppPaths:
     models_dir: Path
 
 
+def _find_repo_root(app_dir: Path) -> Path:
+    """Support running the dashboard either from the repo root or a subfolder."""
+    candidates = [app_dir, app_dir.parent, app_dir.parent.parent]
+    for root in candidates:
+        if (root / "data").exists() or (root / "models").exists():
+            return root
+    return app_dir.parent
+
+
+def normalize_hood_code(value: object) -> str:
+    """Normalize neighbourhood codes so joins work for values like 41 vs 041."""
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    if text == "":
+        return ""
+    try:
+        num = int(float(text))
+        return f"{num:03d}"
+    except Exception:
+        digits = "".join(ch for ch in text if ch.isdigit())
+        if digits:
+            return digits.zfill(3)
+        return text
+
+
+def safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        if pd.isna(value):
+            return float(default)
+        return float(value)
+    except Exception:
+        return float(default)
+
+
 def resolve_paths(base_dir: Optional[Path] = None) -> AppPaths:
     app_dir = base_dir or Path(__file__).resolve().parent
-    repo_root = app_dir.parent
+    repo_root = _find_repo_root(app_dir)
     processed = repo_root / "data" / "processed"
     raw = repo_root / "data" / "data_raw"
 
-    candidates = [
+    forecast_candidates = [
         processed / "supervised_hood_3h_multiclass.xlsx",
         processed / "supervised_hood_3h_multiclass.csv",
         repo_root / "supervised_hood_3h_multiclass.xlsx",
         repo_root / "supervised_hood_3h_multiclass.csv",
         processed / "dashboard_hood_3h_weather.csv",
+        repo_root / "dashboard_hood_3h_weather.csv",
+    ]
+    geo_candidates = [
+        raw / "Neighbourhoods.geojson",
+        raw / "Neighborhoods.geojson",
+        repo_root / "Neighbourhoods.geojson",
+        repo_root / "Neighborhoods.geojson",
     ]
 
-    forecast_source = None
-    for p in candidates:
-        if p.exists():
-            forecast_source = p
-            break
-    if forecast_source is None:
-        forecast_source = processed / "dashboard_hood_3h_weather.csv"
-
-    geojson = raw / "Neighbourhoods.geojson"
+    forecast_source = next((p for p in forecast_candidates if p.exists()), forecast_candidates[0])
+    geojson = next((p for p in geo_candidates if p.exists()), geo_candidates[0])
     models_dir = repo_root / "models"
     return AppPaths(repo_root=repo_root, forecast_source=forecast_source, geojson=geojson, models_dir=models_dir)
 
@@ -87,7 +121,8 @@ class DemoRiskModel:
                 work["y_class"] = 0
 
         features = [
-            c for c in [
+            c
+            for c in [
                 "HOOD_158_CODE",
                 "block_hour",
                 "dow_num",
@@ -99,8 +134,12 @@ class DemoRiskModel:
                 "wind_speed",
                 "relative_humidity",
                 "visibility",
-            ] if c in work.columns
+            ]
+            if c in work.columns
         ]
+        if not features:
+            raise ValueError("DemoRiskModel could not find any usable feature columns.")
+
         self.feature_columns = features
         X = work[features].copy()
         y = work["y_class"].astype(int)
@@ -111,18 +150,22 @@ class DemoRiskModel:
             transformers=[
                 (
                     "num",
-                    Pipeline(steps=[
-                        ("imputer", SimpleImputer(strategy="median")),
-                        ("scaler", StandardScaler()),
-                    ]),
+                    Pipeline(
+                        steps=[
+                            ("imputer", SimpleImputer(strategy="median")),
+                            ("scaler", StandardScaler()),
+                        ]
+                    ),
                     num_cols,
                 ),
                 (
                     "cat",
-                    Pipeline(steps=[
-                        ("imputer", SimpleImputer(strategy="most_frequent")),
-                        ("onehot", OneHotEncoder(handle_unknown="ignore")),
-                    ]),
+                    Pipeline(
+                        steps=[
+                            ("imputer", SimpleImputer(strategy="most_frequent")),
+                            ("onehot", OneHotEncoder(handle_unknown="ignore")),
+                        ]
+                    ),
                     cat_cols,
                 ),
             ],
@@ -140,17 +183,22 @@ class DemoRiskModel:
 
 
 def load_geojson(path: Path) -> dict:
+    if not path.exists():
+        raise FileNotFoundError(f"GeoJSON file not found: {path}")
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def load_history(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError(f"Forecast source not found: {path}")
     if path.suffix.lower() in {".xlsx", ".xls"}:
         df = pd.read_excel(path)
     else:
         df = pd.read_csv(path)
+
     if "time_3h" in df.columns:
-        df["time_3h"] = pd.to_datetime(df["time_3h"])
+        df["time_3h"] = pd.to_datetime(df["time_3h"], errors="coerce")
     if "HOOD_158_CODE" in df.columns:
         df["HOOD_158_CODE"] = pd.to_numeric(df["HOOD_158_CODE"], errors="coerce").fillna(-1).astype(int)
     if "collisions" not in df.columns and "y_class" in df.columns:
@@ -159,6 +207,9 @@ def load_history(path: Path) -> pd.DataFrame:
 
 
 def load_best_bundle(models_dir: Path) -> Tuple[Optional[dict], Optional[Path]]:
+    if not models_dir.exists():
+        return None, None
+
     preferred = [
         "stacking_3model_dashboard_bundle.pkl",
         "stacking_4model_dashboard_bundle.pkl",
@@ -172,7 +223,7 @@ def load_best_bundle(models_dir: Path) -> Tuple[Optional[dict], Optional[Path]]:
     candidates.extend(sorted(models_dir.glob("*dashboard_bundle*.pkl")))
 
     seen = set()
-    unique_candidates = []
+    unique_candidates: List[Path] = []
     for p in candidates:
         if p not in seen:
             seen.add(p)
@@ -218,29 +269,35 @@ def geo_lookup_table(geojson: dict) -> pd.DataFrame:
     rows = []
     for feat in geojson.get("features", []):
         props = feat.get("properties", {})
-        rows.append({
-            "HOOD_158_CODE": str(props.get("AREA_SHORT_CODE")),
-            "hood_name": props.get("AREA_NAME", "Unknown"),
-            "hood_desc": props.get("AREA_DESC", ""),
-        })
+        rows.append(
+            {
+                "HOOD_158_CODE": normalize_hood_code(props.get("AREA_SHORT_CODE")),
+                "hood_name": props.get("AREA_NAME", "Unknown"),
+                "hood_desc": props.get("AREA_DESC", ""),
+            }
+        )
     return pd.DataFrame(rows)
 
 
 def build_latest_template(history: pd.DataFrame, geojson: Optional[dict] = None) -> pd.DataFrame:
-    latest_idx = history.sort_values("time_3h").groupby("HOOD_158_CODE")["time_3h"].idxmax()
-    latest = history.loc[latest_idx].sort_values("HOOD_158_CODE").reset_index(drop=True)
+    work = history.copy()
+    if "time_3h" in work.columns:
+        work = work.dropna(subset=["time_3h"])
+        latest_idx = work.sort_values("time_3h").groupby("HOOD_158_CODE")["time_3h"].idxmax()
+        latest = work.loc[latest_idx].sort_values("HOOD_158_CODE").reset_index(drop=True)
+    else:
+        latest = work.drop_duplicates(subset=["HOOD_158_CODE"], keep="last").sort_values("HOOD_158_CODE").reset_index(drop=True)
 
     if geojson is None:
         return latest
 
-    geo_codes = geo_lookup_table(geojson)["HOOD_158_CODE"].astype(int).sort_values().tolist()
-    present = set(latest["HOOD_158_CODE"].astype(int).tolist())
-    missing = [c for c in geo_codes if c not in present]
-
+    geo_codes = geo_lookup_table(geojson)["HOOD_158_CODE"].tolist()
+    present = {normalize_hood_code(v) for v in latest["HOOD_158_CODE"].tolist()}
+    missing = [code for code in geo_codes if code not in present]
     if not missing:
         return latest
 
-    fallback = {}
+    fallback: Dict[str, object] = {}
     for col in latest.columns:
         if col == "HOOD_158_CODE":
             continue
@@ -280,25 +337,22 @@ def bundle_feature_fill_values(history: pd.DataFrame, feature_columns: List[str]
 
 
 def fetch_openmeteo_hourly(forecast_start: pd.Timestamp, hours_ahead: int = 48) -> Tuple[pd.DataFrame, dict]:
-    """Fetch hourly forecast rows from Open-Meteo.
-
-    Open-Meteo returns HTTP 400 when `forecast_days` is combined with
-    explicit `start_date` / `end_date`. We therefore request a bounded
-    interval using start/end dates only.
-    """
+    """Fetch Toronto hourly weather from Open-Meteo and standardize names/units."""
     start_date = forecast_start.normalize().date().isoformat()
     end_date = (forecast_start + pd.Timedelta(hours=max(hours_ahead, 48))).normalize().date().isoformat()
     params = {
         "latitude": TORONTO_LAT,
         "longitude": TORONTO_LON,
-        "hourly": [
-            "temperature_2m",
-            "relative_humidity_2m",
-            "rain",
-            "snowfall",
-            "wind_speed_10m",
-            "visibility",
-        ],
+        "hourly": ",".join(
+            [
+                "temperature_2m",
+                "relative_humidity_2m",
+                "rain",
+                "snowfall",
+                "wind_speed_10m",
+                "visibility",
+            ]
+        ),
         "timezone": "America/Toronto",
         "start_date": start_date,
         "end_date": end_date,
@@ -313,7 +367,8 @@ def fetch_openmeteo_hourly(forecast_start: pd.Timestamp, hours_ahead: int = 48) 
     df = pd.DataFrame(hourly)
     if df.empty:
         raise ValueError("Open-Meteo returned no hourly rows.")
-    df["time"] = pd.to_datetime(df["time"])
+
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
     rename = {
         "temperature_2m": "temperature",
         "relative_humidity_2m": "relative_humidity",
@@ -321,17 +376,19 @@ def fetch_openmeteo_hourly(forecast_start: pd.Timestamp, hours_ahead: int = 48) 
         "wind_speed_10m": "wind_speed",
     }
     df = df.rename(columns=rename)
-    if "visibility" in df.columns:
-        df["visibility"] = df["visibility"] / 1000.0  # meters -> km
-    else:
-        df["visibility"] = np.nan
+    for col in ["temperature", "relative_humidity", "rain", "snow", "wind_speed", "visibility"]:
+        if col not in df.columns:
+            df[col] = np.nan
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["visibility"] = df["visibility"] / 1000.0  # meters -> km
+
     meta = {
         "source": "Open-Meteo",
         "latitude": payload.get("latitude", TORONTO_LAT),
         "longitude": payload.get("longitude", TORONTO_LON),
         "timezone": payload.get("timezone", "America/Toronto"),
     }
-    return df, meta
+    return df.sort_values("time").reset_index(drop=True), meta
 
 
 def get_live_inputs_for_start(forecast_start: pd.Timestamp) -> Tuple[Dict[str, float], dict, pd.DataFrame]:
@@ -340,14 +397,31 @@ def get_live_inputs_for_start(forecast_start: pd.Timestamp) -> Tuple[Dict[str, f
     nearest_idx = (wx_df["time"] - rounded).abs().idxmin()
     row = wx_df.loc[nearest_idx]
     inputs = {
-        "temperature": float(row.get("temperature", 0.0) or 0.0),
-        "rain": float(row.get("rain", 0.0) or 0.0),
-        "snow": float(row.get("snow", 0.0) or 0.0),
-        "wind_speed": float(row.get("wind_speed", 0.0) or 0.0),
-        "relative_humidity": float(row.get("relative_humidity", 0.0) or 0.0),
-        "visibility": float(row.get("visibility", 10.0) if pd.notna(row.get("visibility", np.nan)) else 10.0),
+        "temperature": safe_float(row.get("temperature"), 0.0),
+        "rain": safe_float(row.get("rain"), 0.0),
+        "snow": safe_float(row.get("snow"), 0.0),
+        "wind_speed": safe_float(row.get("wind_speed"), 0.0),
+        "relative_humidity": safe_float(row.get("relative_humidity"), 0.0),
+        "visibility": safe_float(row.get("visibility"), 10.0),
     }
     return inputs, meta, wx_df
+
+
+def weather_inputs_for_timestamp(
+    weather_forecast: Optional[pd.DataFrame],
+    ts: pd.Timestamp,
+    fallback_inputs: Dict[str, float],
+) -> Dict[str, float]:
+    inputs = {k: safe_float(v, 0.0) for k, v in fallback_inputs.items()}
+    if weather_forecast is None or weather_forecast.empty or "time" not in weather_forecast.columns:
+        return inputs
+
+    nearest_idx = (weather_forecast["time"] - ts.floor("h")).abs().idxmin()
+    row = weather_forecast.loc[nearest_idx]
+    for field in LIVE_WEATHER_FIELDS:
+        default = inputs.get(field, 0.0 if field != "visibility" else 10.0)
+        inputs[field] = safe_float(row.get(field), default)
+    return inputs
 
 
 def make_future_feature_frame(
@@ -357,6 +431,7 @@ def make_future_feature_frame(
     user_inputs: Dict[str, float],
     feature_columns: Optional[List[str]] = None,
     geojson: Optional[dict] = None,
+    weather_forecast: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     latest = build_latest_template(history, geojson=geojson)
     numeric_fill, other_fill = bundle_feature_fill_values(history, feature_columns or list(latest.columns))
@@ -367,8 +442,11 @@ def make_future_feature_frame(
         frame = latest.copy()
         for k, v in derive_temporal_fields(ts).items():
             frame[k] = v
-        for k, v in user_inputs.items():
+
+        step_inputs = weather_inputs_for_timestamp(weather_forecast, ts, user_inputs)
+        for k, v in step_inputs.items():
             frame[k] = v
+
         frame["forecast_step"] = step
         frame["forecast_time"] = ts
         frames.append(frame)
@@ -391,30 +469,47 @@ def _predict_base_model_proba(model, X: pd.DataFrame) -> np.ndarray:
     return np.asarray(model.predict_proba(X), dtype=float)
 
 
+def _standardize_multiclass_proba(proba: np.ndarray) -> np.ndarray:
+    proba = np.asarray(proba, dtype=float)
+    if proba.ndim != 2:
+        raise ValueError(f"Expected a 2D probability array, got shape {proba.shape}")
+    if proba.shape[1] == 3:
+        return proba
+    if proba.shape[1] == 2:
+        pad = np.zeros((proba.shape[0], 1), dtype=float)
+        return np.hstack([proba, pad])
+    raise ValueError(f"Expected 2 or 3 probability columns, got {proba.shape[1]}")
+
+
 def predict_with_bundle(bundle: dict, future_features: pd.DataFrame) -> pd.DataFrame:
     feature_columns = list(bundle.get("feature_columns", []))
     base_model_order = list(bundle.get("base_model_order", []))
     base_models = bundle.get("base_models", {})
     meta_model = bundle.get("meta_model")
 
+    if meta_model is None:
+        raise ValueError("Bundle is missing 'meta_model'.")
+
     X = future_features[feature_columns].copy() if feature_columns else future_features.copy()
 
     meta_parts = []
     for model_name in base_model_order:
+        if model_name not in base_models:
+            raise KeyError(f"Base model '{model_name}' listed in bundle order but missing in bundle['base_models'].")
         model = base_models[model_name]
-        proba = _predict_base_model_proba(model, X)
-        meta_parts.append(proba)
+        meta_parts.append(_predict_base_model_proba(model, X))
+
+    if not meta_parts:
+        raise ValueError("Bundle did not provide any base-model probabilities.")
 
     X_meta = np.hstack(meta_parts)
-    final_proba = np.asarray(meta_model.predict_proba(X_meta), dtype=float)
+    final_proba = _standardize_multiclass_proba(np.asarray(meta_model.predict_proba(X_meta), dtype=float))
     pred_class = final_proba.argmax(axis=1)
 
     out = future_features[["forecast_step", "forecast_time"]].copy()
-    if "HOOD_158_CODE" in X.columns:
-        out["HOOD_158_CODE"] = X["HOOD_158_CODE"].astype(str)
-    else:
-        out["HOOD_158_CODE"] = future_features["HOOD_158_CODE"].astype(str)
-    out["pred_class"] = pred_class
+    hood_source = X["HOOD_158_CODE"] if "HOOD_158_CODE" in X.columns else future_features["HOOD_158_CODE"]
+    out["HOOD_158_CODE"] = hood_source.map(normalize_hood_code)
+    out["pred_class"] = pred_class.astype(int)
     out["p0"] = final_proba[:, 0]
     out["p1"] = final_proba[:, 1]
     out["p2"] = final_proba[:, 2]
@@ -423,11 +518,11 @@ def predict_with_bundle(bundle: dict, future_features: pd.DataFrame) -> pd.DataF
 
 
 def predict_with_fallback(model: DemoRiskModel, future_features: pd.DataFrame) -> pd.DataFrame:
-    proba = model.predict_proba(future_features)
+    proba = _standardize_multiclass_proba(model.predict_proba(future_features))
     pred_class = proba.argmax(axis=1)
     out = future_features[["forecast_step", "forecast_time", "HOOD_158_CODE"]].copy()
-    out["HOOD_158_CODE"] = out["HOOD_158_CODE"].astype(str)
-    out["pred_class"] = pred_class
+    out["HOOD_158_CODE"] = out["HOOD_158_CODE"].map(normalize_hood_code)
+    out["pred_class"] = pred_class.astype(int)
     out["p0"] = proba[:, 0]
     out["p1"] = proba[:, 1]
     out["p2"] = proba[:, 2]
@@ -453,26 +548,36 @@ def aggregate_horizon_predictions(pred_df: pd.DataFrame, horizon_label: str | No
         return "Low"
 
     grouped["risk_bucket"] = [bucket(s, c) for s, c in zip(grouped["risk_score"], grouped["pred_class"])]
-    grouped["HOOD_158_CODE"] = grouped["HOOD_158_CODE"].astype(str)
+    grouped["HOOD_158_CODE"] = grouped["HOOD_158_CODE"].map(normalize_hood_code)
+    grouped["forecast_end"] = pd.to_datetime(grouped["forecast_end"], errors="coerce")
     if horizon_label is not None:
         grouped["horizon"] = horizon_label
     return grouped
 
 
 def merge_geo_labels(pred_agg: pd.DataFrame, geojson: dict) -> pd.DataFrame:
-    lookup = geo_lookup_table(geojson)
-    out = lookup.merge(pred_agg.copy(), on="HOOD_158_CODE", how="left")
+    lookup = geo_lookup_table(geojson).copy()
+    pred_work = pred_agg.copy()
+
+    lookup["HOOD_158_CODE"] = lookup["HOOD_158_CODE"].map(normalize_hood_code)
+    pred_work["HOOD_158_CODE"] = pred_work["HOOD_158_CODE"].map(normalize_hood_code)
+
+    out = lookup.merge(pred_work, on="HOOD_158_CODE", how="left")
     out["pred_class"] = out["pred_class"].fillna(0).astype(int)
     out["p0"] = out["p0"].fillna(1.0)
     out["p1"] = out["p1"].fillna(0.0)
     out["p2"] = out["p2"].fillna(0.0)
     out["risk_score"] = out["risk_score"].fillna(0.0)
     out["risk_bucket"] = out["risk_bucket"].fillna("Low")
+    out["forecast_end"] = pd.to_datetime(out["forecast_end"], errors="coerce")
+    out["forecast_end"] = out["forecast_end"].dt.strftime("%Y-%m-%d %H:%M:%S").fillna("N/A")
+    if "horizon" in out.columns:
+        out["horizon"] = out["horizon"].fillna("N/A")
     return out
 
 
 def top_hotspots(pred_agg: pd.DataFrame, n: int = 10) -> pd.DataFrame:
-    cols = ["HOOD_158_CODE", "hood_name", "risk_bucket", "pred_class", "risk_score", "p2"]
+    cols = ["HOOD_158_CODE", "hood_name", "risk_bucket", "pred_class", "risk_score", "p2", "forecast_end"]
     return (
         pred_agg.sort_values(["pred_class", "risk_score", "p2"], ascending=[False, False, False])
         .head(n)[cols]
@@ -481,6 +586,6 @@ def top_hotspots(pred_agg: pd.DataFrame, n: int = 10) -> pd.DataFrame:
 
 
 def recent_history_for_hood(history: pd.DataFrame, hood_code: str, periods: int = 50) -> pd.DataFrame:
-    hood_int = int(hood_code)
+    hood_int = int(normalize_hood_code(hood_code))
     out = history.loc[history["HOOD_158_CODE"] == hood_int].sort_values("time_3h").tail(periods).copy()
     return out

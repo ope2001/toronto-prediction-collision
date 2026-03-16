@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -24,6 +23,7 @@ from dashboard_utils_openmeteo_live import (
     load_history,
     make_future_feature_frame,
     merge_geo_labels,
+    normalize_hood_code,
     predict_with_bundle,
     predict_with_fallback,
     recent_history_for_hood,
@@ -39,17 +39,17 @@ st.markdown(
     .hero {
         padding: 1.15rem 1.35rem;
         border-radius: 20px;
-        background: linear-gradient(135deg, #020617 0%, #0f172a 28%, #1d4ed8 62%, #0f766e 100%);
+        background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 52%, #0f766e 100%);
         color: #ffffff;
-        box-shadow: 0 16px 36px rgba(2, 6, 23, 0.28);
+        box-shadow: 0 16px 36px rgba(2, 6, 23, 0.22);
         margin-bottom: 1rem;
         border: 1px solid rgba(255,255,255,0.08);
     }
     .hero h1 {
         margin: 0;
-        font-size: 2.15rem;
+        font-size: 2.05rem;
         color: #ffffff !important;
-        text-shadow: 0 2px 8px rgba(2,6,23,0.35);
+        text-shadow: 0 2px 8px rgba(2,6,23,0.28);
     }
     .hero p {
         margin: 0.45rem 0 0;
@@ -69,11 +69,13 @@ def get_static_assets():
     paths = resolve_paths(APP_DIR)
     history = load_history(paths.forecast_source)
     geojson = load_geojson(paths.geojson)
-    return paths, history, geojson
+    signature = f"{paths.forecast_source}:{paths.forecast_source.stat().st_mtime_ns}:{paths.geojson}:{paths.geojson.stat().st_mtime_ns}"
+    return paths, history, geojson, signature
 
 
 @st.cache_resource(show_spinner=False)
-def get_model_assets(history_hash: int):
+def get_model_assets(history_signature: str):
+    _ = history_signature
     paths = resolve_paths(APP_DIR)
     bundle, bundle_path = load_best_bundle(paths.models_dir)
     if bundle is not None:
@@ -82,13 +84,19 @@ def get_model_assets(history_hash: int):
     return {"mode": "demo", "bundle": demo, "bundle_path": None}
 
 
+@st.cache_data(show_spinner=False, ttl=1800)
+def get_live_weather_cached(forecast_start_iso: str):
+    forecast_start = pd.Timestamp(forecast_start_iso)
+    return get_live_inputs_for_start(forecast_start)
+
+
 def combine_date_time(d: datetime.date, t: time) -> pd.Timestamp:
     return pd.Timestamp(datetime.combine(d, t)).floor("3h")
 
 
 def main() -> None:
-    paths, history, geojson = get_static_assets()
-    model_assets = get_model_assets(len(history))
+    paths, history, geojson, history_signature = get_static_assets()
+    model_assets = get_model_assets(history_signature)
 
     st.markdown(
         """
@@ -114,7 +122,12 @@ def main() -> None:
     with st.sidebar:
         st.header("Forecast Controls")
         forecast_date = st.date_input("Forecast date", value=now_floor.date(), help="Select the forecast start date.")
-        forecast_time = st.time_input("Forecast time", value=now_floor.time(), step=10800, help="Use 3-hour blocks to match the trained model.")
+        forecast_time = st.time_input(
+            "Forecast time",
+            value=now_floor.time(),
+            step=10800,
+            help="Use 3-hour blocks to match the trained model.",
+        )
         forecast_start_ts = combine_date_time(forecast_date, forecast_time)
         st.caption(f"Rounded forecast start: {forecast_start_ts}")
 
@@ -142,12 +155,13 @@ def main() -> None:
         "relative_humidity": 72.0,
         "visibility": 12.0,
     }
+    weather_fetch_error = None
 
     if weather_mode == "Live Open-Meteo":
         try:
-            live_inputs, live_meta, live_df = get_live_inputs_for_start(forecast_start_ts)
+            live_inputs, live_meta, live_df = get_live_weather_cached(forecast_start_ts.isoformat())
         except Exception as e:
-            st.warning(f"Live weather fetch failed. Falling back to manual defaults. Details: {e}")
+            weather_fetch_error = str(e)
             weather_mode = "Manual override"
 
     with st.sidebar:
@@ -155,6 +169,8 @@ def main() -> None:
         if weather_mode == "Live Open-Meteo":
             st.success("Live Toronto weather loaded from Open-Meteo.")
             st.caption("These values can still be adjusted for what-if analysis.")
+        elif weather_fetch_error:
+            st.warning(f"Live weather fetch failed. Using manual defaults instead. Details: {weather_fetch_error}")
 
         temperature = st.slider("Temperature (°C)", -20.0, 35.0, float(live_inputs["temperature"]), 0.5)
         rain = st.slider("Rain (mm)", 0.0, 30.0, float(live_inputs["rain"]), 0.1)
@@ -169,7 +185,7 @@ def main() -> None:
         )
 
         hood_lookup = geo_lookup_table(geojson)[["HOOD_158_CODE", "hood_name"]].copy()
-        hood_lookup["HOOD_158_CODE"] = hood_lookup["HOOD_158_CODE"].astype(str)
+        hood_lookup["HOOD_158_CODE"] = hood_lookup["HOOD_158_CODE"].map(normalize_hood_code)
         hood_lookup["label"] = hood_lookup["hood_name"] + " (" + hood_lookup["HOOD_158_CODE"] + ")"
         hood_lookup = hood_lookup.sort_values("hood_name").reset_index(drop=True)
 
@@ -179,7 +195,10 @@ def main() -> None:
         if model_assets["mode"] == "bundle":
             st.success(f"Loaded dashboard bundle: {model_assets['bundle_path'].name}")
         else:
-            st.warning(f"No saved dashboard bundle could be loaded from {paths.models_dir}. Running with a fallback demo model trained from the available forecasting dataset.")
+            st.warning(
+                f"No saved dashboard bundle could be loaded from {paths.models_dir}. "
+                "Running with a fallback demo model trained from the available forecasting dataset."
+            )
 
     if not horizons:
         st.info("Select at least one forecast horizon from the sidebar.")
@@ -198,12 +217,18 @@ def main() -> None:
     source_note = "Open-Meteo live feed" if weather_mode == "Live Open-Meteo" else "Manual override"
     st.info(f"Model in use: {model_name} | Forecast source: {paths.forecast_source.name} | Weather input mode: {source_note}")
     if live_meta is not None:
-        st.caption(f"Live weather coordinates: {live_meta['latitude']:.4f}, {live_meta['longitude']:.4f} | Timezone: {live_meta['timezone']}")
+        st.caption(
+            f"Live weather coordinates: {live_meta['latitude']:.4f}, {live_meta['longitude']:.4f} | "
+            f"Timezone: {live_meta['timezone']}"
+        )
+        st.caption("Live mode now uses the nearest Open-Meteo weather row for each forecast step, not one single weather snapshot for the whole horizon.")
 
     all_horizon_outputs = {}
     feature_columns = None
     if model_assets["mode"] == "bundle":
         feature_columns = list(model_assets["bundle"].get("feature_columns", []))
+
+    weather_forecast = live_df if weather_mode == "Live Open-Meteo" else None
 
     for horizon_label in horizons:
         steps = HORIZON_STEPS[horizon_label]
@@ -214,6 +239,7 @@ def main() -> None:
             user_inputs=user_inputs,
             feature_columns=feature_columns,
             geojson=geojson,
+            weather_forecast=weather_forecast,
         )
 
         if model_assets["mode"] == "bundle":
@@ -254,8 +280,8 @@ def main() -> None:
                     "HOOD_158_CODE": True,
                     "risk_bucket": True,
                     "pred_class": True,
-                    "risk_score": ':.2f',
-                    "p2": ':.2f',
+                    "risk_score": ":.2f",
+                    "p2": ":.2f",
                     "forecast_end": True,
                 },
                 mapbox_style="carto-positron",
@@ -272,13 +298,16 @@ def main() -> None:
                 st.plotly_chart(fig, use_container_width=True)
             with right:
                 st.subheader("Top hotspots")
-                top_display = top_df.rename(columns={
-                    "HOOD_158_CODE": "Hood",
-                    "hood_name": "Neighbourhood",
-                    "pred_class": "Risk class",
-                    "risk_score": "Risk score",
-                    "p2": "P(class 2)",
-                })
+                top_display = top_df.rename(
+                    columns={
+                        "HOOD_158_CODE": "Hood",
+                        "hood_name": "Neighbourhood",
+                        "pred_class": "Risk class",
+                        "risk_score": "Risk score",
+                        "p2": "P(class 2)",
+                        "forecast_end": "Forecast end",
+                    }
+                )
                 st.dataframe(top_display, use_container_width=True, hide_index=True)
                 st.download_button(
                     label="Download hotspot table (CSV)",
@@ -296,11 +325,13 @@ def main() -> None:
         hood_all = []
         for horizon_label in horizons:
             agg_df = all_horizon_outputs[horizon_label]["aggregated"]
-            row = agg_df.loc[agg_df["HOOD_158_CODE"] == str(selected_hood)].copy()
+            row = agg_df.loc[agg_df["HOOD_158_CODE"] == normalize_hood_code(selected_hood)].copy()
             if len(row):
-                hood_all.append(row.iloc[0][["horizon", "hood_name", "risk_bucket", "pred_class", "risk_score", "p0", "p1", "p2"]])
+                hood_all.append(
+                    row.iloc[0][["horizon", "hood_name", "risk_bucket", "pred_class", "risk_score", "p0", "p1", "p2", "forecast_end"]]
+                )
         if hood_all:
-            hood_detail = pd.DataFrame(hood_all)
+            hood_detail = pd.DataFrame(hood_all).rename(columns={"forecast_end": "forecast_end"})
             st.dataframe(hood_detail, use_container_width=True, hide_index=True)
         else:
             st.info("No forecast row found for the selected neighbourhood.")
@@ -317,7 +348,13 @@ def main() -> None:
     if live_df is not None:
         st.divider()
         st.subheader("Live weather preview (Toronto) — next 24 hours")
-        preview = live_df[[c for c in ["time", "temperature", "rain", "snow", "wind_speed", "relative_humidity", "visibility"] if c in live_df.columns]].head(24).copy()
+        preview = live_df[
+            [
+                c
+                for c in ["time", "temperature", "rain", "snow", "wind_speed", "relative_humidity", "visibility"]
+                if c in live_df.columns
+            ]
+        ].head(24).copy()
         st.dataframe(preview, use_container_width=True, hide_index=True)
 
 
